@@ -1,10 +1,13 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -32,7 +35,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
 	const maxMemory int = 10 << 20
 	err = r.ParseMultipartForm(int64(maxMemory))
 	if err != nil {
@@ -41,20 +43,42 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 
 	file, fileHeader, err := r.FormFile("thumbnail")
-	defer file.Close()
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Unable parse form file", err)
 		return
 	}
-	mediaType := fileHeader.Header.Get("Content-Type")
-	b, err := io.ReadAll(file)
+
+	defer file.Close()
+	contentTypeHeader := fileHeader.Header.Get("Content-Type")
+	mediaType, _, err := mime.ParseMediaType(contentTypeHeader)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Unable read form file", err)
+		respondWithError(w, http.StatusBadRequest, "Could not parse media type from header", err)
 		return
 	}
 
-	imgString := base64.StdEncoding.EncodeToString(b)
-	dataUrl := fmt.Sprintf("data:%s;base64,%s", mediaType, imgString)
+	if mediaType != "image/jpeg" && mediaType != "image/png" {
+		respondWithError(w, http.StatusBadRequest, "Must be a jpeg or png", nil)
+		return
+	}
+
+	ext := strings.Split(mediaType, "/")[1]
+	fileName := fmt.Sprintf("%v.%s", videoID, ext)
+	thumbPath := filepath.Join(cfg.assetsRoot, fileName)
+	newFile, err := os.Create(thumbPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not create new file", err)
+	}
+	defer newFile.Close()
+
+	_, err = io.Copy(newFile, file)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error saving file", err)
+		return
+	}
+
+	baseURL := fmt.Sprintf("http://localhost:%s", cfg.port)
+	thumbUrl := fmt.Sprintf("%s/assets/%s", baseURL, fileName)
+
 	videoData, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Unable to get video from id", err)
@@ -62,11 +86,11 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 
 	if videoData.UserID != userID {
-		respondWithError(w, http.StatusUnauthorized, "You are not authorized to upload a thumbnail", err)
+		respondWithError(w, http.StatusUnauthorized, "You are not authorized to upload a thumbnail", nil)
 		return
 	}
 
-	videoData.ThumbnailURL = &dataUrl
+	videoData.ThumbnailURL = &thumbUrl
 	cfg.db.UpdateVideo(videoData)
 
 	respondWithJSON(w, http.StatusOK, videoData)
