@@ -114,11 +114,12 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	defer processedFile.Close()
 	var layout string
-	if aspectRatio == "16:9" {
+	switch aspectRatio {
+	case "16:9":
 		layout = "landscape"
-	} else if aspectRatio == "9:16" {
+	case "9:16":
 		layout = "portrait"
-	} else {
+	default:
 		layout = "other"
 	}
 
@@ -135,12 +136,18 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	videoURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, fullKey)
+	videoURL := fmt.Sprintf("%s,%s", cfg.s3Bucket, fullKey)
 	videoData.VideoURL = &videoURL
 	err = cfg.db.UpdateVideo(videoData)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Could not update video", err)
 		return
 	}
-	respondWithJSON(w, http.StatusOK, videoData)
+	
+	returnVideo, err := cfg.dbVideoToSignedVideo(videoData)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not sign video url", err)
+	}
+	
+	respondWithJSON(w, http.StatusOK, returnVideo)
 }
